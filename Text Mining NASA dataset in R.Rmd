@@ -1,0 +1,684 @@
+---
+title: "Text Mining NASA dataset"
+author: "Eralda Gjika"
+date: "November, 2021"
+output: html_notebook
+---
+**`r colorize("November,2021","red")`**
+
+Reference book: https://www.tidytextmining.com/index.html 
+
+## Text Mining {.tabset}
+### Pre-processing 
+In this part we are doing some preliminary graphs and test to better understand the data. First we load the libraries used and load the data.
+Libraries used are:
+```{r}
+library(tidytext)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(jsonlite)
+library(widyr)
+library(igraph)
+library(ggraph)
+library(stringr)
+library(tm)
+set.seed(1234)
+```
+
+This is a function for coloring text in rmarkdown which we are using to give a better view of the material.
+```{r}
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+```
+
+
+**`r colorize("Topic Modelling. ","blue")`**
+First we obtain the NASA dataset metadata using the R code:
+```{r}
+library(jsonlite)
+metadata <- fromJSON("https://data.nasa.gov/data.json")
+names(metadata$dataset)
+```
+Let see the class of the variables we are interested in:
+```{r}
+class(metadata$dataset$title)
+class(metadata$dataset$description)
+class(metadata$dataset$keyword)
+```
+
+**`r colorize("START: Pre-processing of the dataset","red")`**
+
+First let use the code [Reference](https://github.com/dgrtwo/tidy-text-mining/issues/72) to call the information we want to use in our case. (The reference shows how to solve some issues with the NASA metadata).
+
+```{r}
+# previously metadata$dataset$`_id`$`$oid`
+ids = metadata$dataset$identifier
+
+nasa_title <- tibble(id = ids, title = metadata$dataset$title)
+nasa_title <- nasa_title %>% 
+    unnest_tokens(word, title) %>% 
+    anti_join(stop_words, by = "word") %>%
+    # remove terms v1.0, l2, 0.500, i, ii, ...
+    filter(!str_detect(word, "^[v|l][0-9]?[\\.[0-9]?]"), 
+           !str_detect(word, "^[0-9]+[\\.[0-9]+]*$"),
+           !str_detect(word, "^[i]+$"))
+
+```
+The code below is a pre-processing phase to better understand the dataset and especially unique words in variable **title**. The graph output shows the connections of unique words between each other and the creation of small groups of words for title variable and the next graph shows connections for description variable.
+
+```{r}
+# sample outcome
+nasa_title %>%
+    pairwise_count(word, id, sort = TRUE, upper = FALSE) %>%
+    #  threshold  to 150
+    filter(n > 150) %>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(edge_alpha = n, edge_width = n),
+                   edge_colour = "navyblue",
+                   show.legend = FALSE) +
+    geom_node_point(size = 3, col = "darkblue") +
+    geom_node_text(
+        aes(label = name),
+        repel = TRUE,
+        family = "Menlo",
+        size = 3,
+        point.padding = unit(0.2, "lines")
+    ) +
+    theme_void()
+```
+```{r Graph description words}
+nasa_desc <- tibble(id = metadata$dataset$identifier,                     desc = metadata$dataset$description)
+
+nasa_desc %>%
+    pairwise_count(word, id, sort = TRUE, upper = FALSE) %>%
+    #  threshold 500
+    filter(n > 500) %>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(aes(edge_alpha = n, edge_width = n),
+                   edge_colour = "navyblue",
+                   show.legend = FALSE) +
+    geom_node_point(size = 3, col = "darkblue") +
+    geom_node_text(
+        aes(label = name),
+        repel = TRUE,
+        family = "Menlo",
+        size = 3,
+        point.padding = unit(0.2, "lines")
+    ) +
+    theme_void()
+```
+Now let us explore the dataset descriptions. The code below will help us to call as a tibble  object (named: **nasa_desc**) the description of the files.
+
+```{r}
+nasa_desc <- tibble(id = metadata$dataset$identifier, desc = metadata$dataset$description)
+
+nasa_desc %>% 
+  select(desc) %>% 
+  sample_n(3) # to save space in the output we are visualizing only 3 randomly documents descriptions
+```
+Finding keywords in documents may help us to determine latter the stopping words which we will discard. We see that based on the ID of the document almost 196 316 words appearing as keyword in the nasa document. 
+```{r}
+nasa_keyword <- tibble(id = metadata$dataset$identifier,  keyword = metadata$dataset$keyword) %>%
+  unnest(keyword)
+
+nasa_keyword
+```
+**`r colorize("What are the most common keywords?","blue")`**
+
+Again, this part may help us to decide on stop words and latter on **topics name**.
+
+But first let change all of the keywords to either lower or upper case to get rid of duplicates like “EARTH” and “Earth”. 
+```{r}
+nasa_keyword <- nasa_keyword %>% 
+  mutate(keyword = toupper(keyword)) # change to upper cases
+```
+
+```{r}
+nasa_keyword %>% 
+  group_by(keyword) %>% 
+  count(sort = TRUE)
+```
+
+Because we are only working with **document description** for this project (even that to obtain a better analysis it will be informative to work also with mostly used words in titles, and also connecting them with keywords). The code below will find mostly used words in documents description after removing stop-words (**Here:** stop_words are those from the dataset used from the tidytext package) .
+```{r}
+library(tidytext)
+nasa_desc <- nasa_desc %>% 
+  unnest_tokens(word, desc) %>% 
+  anti_join(stop_words)
+```
+Below we are viewing a tibble of document: identifier (id) and mostly used words (after removing stop_words). Approximately we have 4 mln rows. For  a better view of the number of words within each id we can count them and display a new table (see below).
+```{r}
+nasa_desc
+```
+**`r colorize("What are the most common words in the NASA dataset descriptions?","blue")`**
+
+Let us use the previously tibble to display in a frequency table the most used words in description field. The frequency are sorted from the word with highest frequency to the one with lower frequency. **data** is the word with highest frequency (approximately 92472 times) and the lower frequency is 1.
+Here we observe that we have also number with high frequency which can maybe removed from the document an treated as stoping words.(this is something to be decided latter).
+```{r}
+nasa_desc %>%  
+  count(word, sort = TRUE)# frequency of words used in description sorted 
+
+# tail(nasa_desc %>% count(word, sort = TRUE)) # to see the words with the lower frequency 
+# A tibble: 6 x 2
+#  word       n
+#  <chr>  <int>
+# 1 zskzv      1
+# 2 zts        1
+# 3 zucrow     1
+# 4 zvs        1
+# 5 zygo       1
+# 6 zylon      1
+```
+
+**`r colorize("Word co-ocurrences and correlations","blue")`**
+
+To better understand the process of removing stop_words from our documents maybe we also need to know the co-occurrences and correlations between (at minimum) two words. A function which may be used here is: pairwise_count() from the **widyr package**, which will count how many times each pair of words occurs together in description field.
+From the output again we observe that numbers are mostly associated with words such as data, level, phase, system etc. 
+**So, this is another indices to decide to consider numbers as stopping words.** 
+```{r}
+library(widyr)
+
+desc_word_pairs <- nasa_desc %>% 
+  pairwise_count(word, id, sort = TRUE, upper = FALSE)
+
+desc_word_pairs
+```
+
+Let’s plot networks of these co-occurring words so we can see these relationships better. We see some clear clustering in this network of description words; For example, **data** is the word which is mostly correlated to other words, and **system** word is another one. So, we may observe that for words with a frequency greater than 2000 (this value is chosen based graphical display limitations) **data** and **system** are the two words which organize the words into two families of words co-occurring.
+```{r}
+library(ggplot2)
+library(igraph)
+library(ggraph)
+
+set.seed(1234)
+desc_word_pairs %>%
+  filter(n >= 2000) %>% # co-occurrence greater than 2000 frequency
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n, edge_width= n), edge_colour = "darkred") +
+  geom_node_point(size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE,
+                 point.padding = unit(0.2, "lines")) +
+  theme_void()
+```
+**`r colorize("Correlations between words in description field","blue")`**
+To examine the relationships among words into documents in a different way, we can find the correlation among the words. This looks for those words that are more likely to occur together than with other words for a dataset. 
+We notice that words at the top of this sorted tibble have **correlation coefficients** equal to 1, which means they always occur together. This means these are **redundant words**. It may not make sense to continue to use both of the words in these sets of pairs; instead, just one word could be used.
+**NOTE:** This will be helpful for the stopping word process latter.
+```{r}
+desc_cors <- nasa_desc %>% 
+  group_by(word) %>%
+  filter(n() >= 50) %>%
+  pairwise_cor(word, id, sort = TRUE, upper = FALSE)
+desc_cors
+```
+
+The output (graph) below shows that there is a high number of words into the document which are highly correlated and the visualization is not that clear. (Trying to change the threshold of the correlation will also change the display)
+```{r}
+set.seed(1234)
+desc_cors %>%
+  filter(correlation > .9) %>% # considering only those words with corr>0.9
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation, edge_width = correlation), edge_colour = "royalblue") +
+  geom_node_point(size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE,
+                 point.padding = unit(0.2, "lines")) +
+  theme_void()
+```
+
+
+**`r colorize("APPENDIX (See Appendix at the end of the material)","blue")`**
+For more information on decision to discard words from the document we may also use a detailed analysis as above for the keywords in title. 
+
+**`r colorize("END! Pre-Processing","red")`**
+`r colorize("**The analysis done up to here will help us on deciding which words should we discard and consider by the way as stop_words in document field.**","orange")`
+
+### `r colorize("Part (a)","red")`
+`r colorize("Part A","red")`
+
+Compute the tf_idf scores for the words within documents.  Use your judgement to determine which words should be considered uninformative and discard these words.
+
+**`r colorize(" Calculating tf_idf for the document description fields","blue")`**
+
+Another approach to decide on stop_words is to look at a term’s inverse document frequency (idf), which decreases the weight for commonly used words and increases the weight for words that are not used very much in a collection of documents. This can be combined with term frequency to calculate a term’s tf-idf, the frequency of a term adjusted for how rarely it is used. 
+It is intended to measure how important a word is to a document in a collection (or corpus) of documents. Let’s apply that approach to the description fields of these NASA datasets.
+
+**`r colorize(" What is tf-idf for the document description field words?","blue")`**
+
+We will consider each description field as one document, and the whole set of description fields the collection or corpus of documents. We have already used unnest_tokens() previously to make a tidy data frame of the words in the description fields, so now we can use bind_tf_idf() to calculate tf_idf for each word.
+```{r}
+desc_tf_idf <- nasa_desc %>% 
+  count(id, word, sort = TRUE) %>%
+  ungroup() %>%
+  bind_tf_idf(word, id, n)
+```
+
+**`r colorize("What are the highest tf-idf words in the NASA description fields?","blue")`**
+
+Below are shown 10 rows corresponding to words and their tf_idf scores (we have sorted the tibble).
+
+```{r}
+desc_tf_idf # without sorting by tf_idf
+desc_tf_idf %>% 
+  arrange(-tf_idf) # sorting from the highest tf_idf to the lower
+```
+
+These are the most important words in the **description fields** as measured by tf_idf, meaning they are common but not too common.
+
+**ATTENTION!** Notice we have run into an issue here; in some words both n and term frequency are equal to 1 for these terms, meaning that these were description fields that only had a single word in them. 
+**If a description field only contains one word, the tf-idf algorithm will think that is a very important word.**
+Depending on our analytic goals, it might be a good idea to throw out all description fields that have very few words.
+
+**`r colorize("Connecting description fields to keywords","blue")`**
+
+We now know which words in the descriptions have high tf-idf, and we also have labels for these descriptions in the keywords. Let’s do a full join of the keyword data frame and the data frame of description words with tf-idf, and then find the highest tf-idf words for a given keyword.(This is also used for the last part of topic name)
+```{r}
+desc_tf_idf_key <- full_join(desc_tf_idf, nasa_keyword, by = "id") 
+# head(desc_tf_idf,10)
+# desc_tf_idf
+desc_tf_idf_key %>% arrange(-tf_idf) # sorted from the highest value of tf_idf
+```
+Based on the reasoning that a value equal to 1 for n and tf it might be a good idea to throw out all description fields that have very few words. Let's filter and remove from the data above all those words with **tf=1 and n =1**. After filtering let's sort from the highest value of tf_idf. What we see is that the highest value of tf_idf is now approximately 5.17. What we also observe for this subset is the fact that the number of times the word appears (n) is >=2 times with a maximum value of n=20 for the highest value of tf_idf.
+
+**`r colorize("Threshold of removing stopwords","blue")`**
+
+Some recommendations are: to measure the number of documents a term appears in and filter those that appear in more than 50% of them, or the top 500. The best (as in more representative) terms in a document are those with higher tf-idf because those terms are common in the document, while being rare in the collection. 
+So, maybe we can combine our stop_words with those from the tf_idf lower than 1 or 2 (threshold). For choosing this value I have also observed the words and their tf_idf from the start and observed that most of them are numbers or "non-sense" words. The number of rows in our table of information decreases from almost 8.8 mln rows to 19168 rows. 
+
+**ATTENTION:** Here we also have rows with similar words, combined with keywords.
+
+```{r}
+desc_tf_idf_key %>% filter(n!=1 & tf!=1)%>% arrange(-tf_idf) # approximately 9 mln rows
+desc_tf_idf_key<-desc_tf_idf_key %>% filter(n!=1 & tf!=1 & tf_idf>1) %>% arrange(-tf_idf) # approximately 19 thousand rows
+desc_tf_idf_key
+```
+
+**`r colorize("Without combining unique words with keywords.","blue")`**
+
+Based on the reasoning that a value equal to 1 for n and tf it might be a good idea to throw out all description fields that have very few words. Let's filter and remove from the data above all those words with tf=1 and n =1. After filtering let's sort from the highest value of tf_idf. What we see is that the highest value of tf_idf is now 5.749323. What we also observe for this subset is the fact that the number of times the word appears (n) is >=2 times with a maximum value of n=20 for the highest value of tf_idf.
+
+**`r colorize("Threshold of removing stopwords","blue")`**
+
+The number of rows in our table of information decreases from almost 8.8 mln rows to 7 thousand rows. Here we also have rows with similar words
+
+```{r}
+# recall the data to our attention
+desc_tf_idf <- nasa_desc %>% 
+  count(id, word, sort = TRUE) %>%
+  ungroup() %>%
+  bind_tf_idf(word, id, n)
+```
+
+```{r}
+desc_tf_idf %>% filter(n!=1 & tf!=1)%>% arrange(-tf_idf) # approximately 900 thousand rows
+desc_tf_idf_stop_1<-desc_tf_idf %>% filter(n!=1 & tf!=1 & tf_idf>0.5) %>% arrange(-tf_idf) # approximately 6 thousand rows
+desc_tf_idf_stop_1
+```
+Using information about tf-idf statistic and also our judgement we have created a stop_word vector adding some words which does not give information about the description field. 
+Below are shown top 10 words sorted by tf_idf after removing stop_words.
+```{r}
+# enriching my_stopwords vector from the previously table, by personal judgement and observing the values of n and tf and tf_idf
+
+my_stopwords <- tibble(word = c(as.character(1:10), "ii","e.g","0","00","i.e","2l","00.000","vl.0","iii",                                "v1", "v03", "l2", "l3", "l4", "v5.2.0", "v003", "v004", "v005", "v006", "v7","54.500","li","68","52","sir","1.0","sa","se","1.5","te","3x3","5x5","rv","m.l","r.l","tt","gt","la","text","lt","sic","viirs","iue","pra","vg2","6sec","ocn","1.1.0","2.0.1","1.2.0","http","timesnewromanpsmt","sts","irt","li","ks","nlr","br","td"))
+my_stop_words <- bind_rows(stop_words,my_stopwords)# adding stop_words vector
+
+
+NASA<-desc_tf_idf_stop_1# saving our filtered dataset after removing those words with stopwords decided by tf_idf and n combinations
+ 
+
+word_counts <- NASA %>%
+  anti_join(my_stop_words) %>%
+  count(id, word,tf,idf,tf_idf, sort = TRUE) %>% 
+  arrange(-tf_idf) %>%
+  ungroup()
+word_counts
+
+NASA_desc_dtm <- word_counts %>% # 6763 rows
+  cast_dtm(id, word, n) 
+NASA_desc_dtm 
+
+```
+So, words like: lisco, gasex, aisrp, tbd, mooring, bahamas, paragraph, tara, bermuda, kmz are the 10 top words after using a "filtration procedure" based on previous analysis and tf_idf. 
+
+
+### `r colorize("Part (b)","blue")` 
+**`r colorize("Part B","blue")`**
+**`r colorize("Topic modeling LDA","blue")`**
+
+`r colorize("Casting to a document-term matrix","blue")` 
+
+To do the topic modeling we need to make a **DocumentTermMatrix**, a special kind of matrix from the *tm package* . Rows correspond to documents (description texts in our case) and columns correspond to terms (i.e., words); it is a sparse matrix and the values are word counts. The information we need is the number of times each word is used in each document, to make a DocumentTermMatrix. We can cast() from our tidy text format to this non-tidy format.Notice that this example document-term matrix is (very close to) 100% sparse, meaning that almost all of the entries in this matrix are zero. Each non-zero entry corresponds to a certain word appearing in a certain document.
+
+```{r}
+word_counts <- NASA %>%
+  anti_join(my_stop_words) %>%
+  count(id, word, sort = TRUE) %>%
+  ungroup()
+
+word_counts
+```
+
+
+```{r}
+desc_dtm <- word_counts %>%
+  cast_dtm(id, word, n)
+
+desc_dtm
+
+
+#remove sparse terms 
+desc_dtm_97 = removeSparseTerms(desc_dtm,.97) 
+desc_dtm_97
+desc_dtm_97Mat<-as.matrix(desc_dtm_97)
+dim(desc_dtm_97Mat)
+nrow(desc_dtm_97Mat)
+```
+
+**`r colorize("Ready for topic modeling","blue")`**
+
+**`r colorize("Train and Test","red")`**
+```{r}
+NDocs =nrow(desc_dtm_97Mat)
+TestSet = sort(sample(1: NDocs, floor(NDocs*.8))) # 80 % of observations
+Nasa_Test = desc_dtm[ TestSet,] # 
+Nasa_Train = desc_dtm[-TestSet,] #
+```
+
+Now let’s use the **topicmodels package** to create an LDA model. How many topics will we tell the algorithm to make? This is a question much like in k-means clustering; we don’t really know ahead of time. We tried the following modeling procedure using 12, 16, 20, 24, 28, 32 topics;
+First we train the data on our training set. (Nasa_train)
+
+A single perplexity score is not really useful. What we want to do is to calculate the perplexity score for models with different parameters, to see how this affects the perplexity. Here we'll use a for loop to train a model with different topics, to see how this affects the perplexity score. Note that this might take a little while to compute.
+
+
+**`r colorize("Interpreting the topic model: PERPLEXITY","blue")`**
+```{r}
+## create a dataframe to store the perplexity scores for different values of k
+p = data.frame(k = c(2,4,8,12,16,18,20,24,32), perplexity = NA)
+
+## loop over the values of k in data.frame p 
+for (i in 1:nrow(p)) {
+  print(p$k[i])
+  ## calculate perplexity for the given value of k
+  m = LDA(Nasa_Train, method = "Gibbs", k = p$k[i],  control = list(alpha = 0.01))
+  ## store result in our data.frame
+  p$perplexity[i] = perplexity(m, Nasa_Test)
+  print(c(p$k[i],p$perplexity[i]))
+}
+```
+
+Now we can plot the perplexity scores for different values of k (topics).
+```{r}
+
+library(ggplot2)
+ggplot(p, aes(x=k, y=perplexity)) + geom_line()+
+  ggtitle("Perplexity evolution by number of topic, for NASA dataset")
+```
+
+What we see here is that first the perplexity decreases as the number of topics increases. This makes sense, because the more topics we have, the more information we have. It is only between 24 and 32 topics that we see the perplexity rise again smoothly. If we would use smaller steps in k we could find the lowest point. If we repeat this several times for different models, and ideally also for different samples of train and test data, we could find a value for k of which we could argue that it is the best in terms of model fit.
+`r colorize("12 - 16 topics could be the best choice.","red")`
+
+**`r colorize("Conclusion on Number of Topics","blue")`**
+
+`r colorize("There is no golden bullet. The choice for how many topics (k) is best comes down to what you want to use topic models for. Predictive validity, as measured with perplexity, is a good approach if you just want to use the document X topic matrix as input for an analysis (clustering, machine learning, etc.). If you want to use topic modeling as a tool for bottom-up (inductive) analysis of a corpus, it is still usefull to look at perplexity scores, but rather than going for the k that optimizes fit, you might want to look for a knee in the plot, similar to how you would choose the number of factors in a factor analysis. But more importantly, you'd need to make sure that how you (or your coders) interpret the topics is not just reading tea leaves.", "green")` 
+
+
+
+**`r colorize("Tidying LDA modelss","blue")`**
+
+Now that we have built the model, let’s tidy() the results of the model, i.e., construct a tidy data frame that summarizes the results of the model. The tidytext package includes a tidying method for LDA models from the **topicmodels package**.
+Below are the LDA models for 12,16,20,24,28,32 topics.
+```{r}
+
+# 12 topics
+desc_lda_12 <- LDA(Nasa_Train, method="Gibbs",k = 12, control = list(alpha=0.01,seed = 512))
+desc_lda_12
+
+tidy_lda_12 <- tidy(desc_lda_12)
+
+head(tidy_lda_12,14)
+tidy_lda_12
+
+# 16 topics
+desc_lda_16 <- LDA(Nasa_Train, method="Gibbs",k = 16, control = list(alpha=0.01,seed = 512))
+tidy_lda_16 <- tidy(desc_lda_16)
+tidy_lda_16
+
+# 20 topics
+desc_lda_20 <- LDA(Nasa_Train, method="Gibbs",k = 20, control = list(alpha=0.01,seed = 512))
+tidy_lda_20 <- tidy(desc_lda_20)
+tidy_lda_20
+
+# 24 topics
+desc_lda_24 <- LDA(Nasa_Train, method="Gibbs",k = 24, control = list(alpha=0.01,seed = 512))
+tidy_lda_24 <- tidy(desc_lda_24)
+tidy_lda_24
+
+# 28 topics
+desc_lda_28 <- LDA(Nasa_Train, method="Gibbs",k = 28, control = list(alpha=0.01,seed = 512))
+tidy_lda_28 <- tidy(desc_lda_28)
+tidy_lda_28
+
+# 32 topics
+desc_lda_32 <- LDA(Nasa_Train, method="Gibbs",k = 32, control = list(alpha=0.01,seed = 512))
+tidy_lda_32 <- tidy(desc_lda_32)
+tidy_lda_32
+
+```
+
+`r colorize("The column β tells us the probability of that term being generated from that topic for that document.", "red")` It is the probability of that term (word) belonging to that topic. Notice that some of the values for β are very, very low, and some are not so low.
+
+`r colorize("What is each topic about? Let’s examine the top 10 terms for each topic from the tidy data of 12 topic and 16 topic.", "red")`.
+Here I tried top 5 terms per topic but it was not informative to decide on the topic name. So , I decided to go for 10 top terms per topic for 12 and 16 topics.  
+
+```{r}
+# top 10 terms from 12 topics tidy data
+
+top_terms_12 <- tidy_lda_12 %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms_12
+
+# top 10 terms from 16 topics tidy data
+top_terms_16 <- tidy_lda_16 %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms_16
+```
+
+It is not very easy to interpret what the topics are about from a data frame like this so let’s look at this information visually in Figure. 
+
+```{r fig.dim = c(40, 70)}
+top_terms_12 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  group_by(topic, term) %>%    
+  arrange(desc(beta)) %>%  
+  ungroup() %>%
+  ggplot(aes(beta, term, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  scale_y_reordered() +
+  labs(title = "Top 10 terms in each LDA 12 topic",
+       x = expression(beta), y = NULL) +
+  facet_wrap(~ topic, ncol = 4, scales = "free")
+
+
+top_terms_16 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  group_by(topic, term) %>%    
+  arrange(desc(beta)) %>%  
+  ungroup() %>%
+  ggplot(aes(beta, term, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  scale_y_reordered() +
+  labs(title = "Top 10 terms in each LDA 16 topic",
+       x = expression(beta), y = NULL) +
+  facet_wrap(~ topic, ncol = 4, scales = "free")
+```
+**`r colorize(" Topic Naming","blue")`**
+Now we are going back to our pre-processing phase where we also discussed on the stop+words and keywords. Now we can see which term of the topics are related to the keywords discussed in the pre-processing-phase. 
+Returning to the dataset we merged before with words-tf idf and keywords, we may use it to name our topics. Here I have also used `r colorize("**GOOGLE**", "red")`as a tool to understand the words related to each topic.
+
+```{r}
+desc_tf_idf_stop_2
+```
+
+
+```{r fig.dim = c(60, 40)}
+top_terms_12 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  group_by(topic, term) %>%    
+  arrange(desc(beta)) %>%  
+  mutate(topic=recode(topic, "1"="Earth Science/Soil","2"="Air Quality","3"="Geophysic","4"="Ocean Chemistry","5"="Climate","6"="Terrain Surface","7"="Coastal Process","8"="Sea/Ice","9"="Atmospheric Radiation","10"="Photon Project","11"="Space Operation","12"="Research"))%>%
+  ungroup() %>%
+  ggplot(aes(beta, term, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  scale_y_reordered() +
+  labs(title = "Top 10 terms in each LDA 12 topic",
+       x = expression(beta), y = NULL) +
+  facet_wrap(~ topic, ncol = 4, scales = "free")
+```
+**`r colorize("Interpretation!!","blue")`** 
+We can see that 16 topics are sometimes very close to each other. Using also abbreviations of project names or locations has helped me to identify the topic names. Also observing the words and the keyword they are connected has helped in identifying the topic name for that set of words. 
+
+### `r colorize("APPENDIX ","orange")` 
+**`r colorize(" This part has additional information I have used to decide on stoping words, topic and name topics.","orange")`**
+
+We just explored which words are associated with which topics. Next, let’s examine which topics are associated with which description fields (i.e., documents). We will look at a different probability for this, γ , the probability that each document belongs in each topic, again using the tidy verb.
+```{r}
+lda_gamma <- tidy(desc_lda_12, matrix = "gamma")
+
+lda_gamma
+```
+Notice that some of the probabilities visible at the top of the data frame are low and some are higher. Our model has assigned a probability to each description belonging to each of the topics we constructed from the sets of words. How are the probabilities distributed? The code below shows the distribution.
+```{r}
+ggplot(lda_gamma, aes(gamma)) +
+  geom_histogram(alpha = 0.8) +
+  scale_y_log10() +
+  labs(title = "Distribution of probabilities for all topics",
+       y = "Number of documents", x = expression(gamma))
+```
+
+First notice that the y-axis is plotted on a log scale; otherwise it is difficult to make out any detail in the plot. Next, notice that γ runs from 0 to 1; remember that this is the probability that a given document belongs in a given topic. There are many values near zero, which means there are many documents that do not belong in each topic. Also, there are many values near γ=1; these are the documents that do belong in those topics. This distribution shows that documents are being well discriminated as belonging to a topic or not. We can also look at how the probabilities are distributed within each topic, as shown in figure below.
+```{r}
+ggplot(lda_gamma, aes(gamma, fill = as.factor(topic))) +
+  geom_histogram(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~ topic, ncol = 4) +
+  scale_y_log10() +
+  labs(title = "Distribution of probability for each topic",
+       y = "Number of documents", x = expression(gamma))
+```
+
+Let’s look specifically at topic 2 in the figure above, a topic that had documents cleanly sorted in and out of it. There are many documents with γ close to 1; these are the documents that do belong to topic 2 according to the model. There are also many documents with γ close to 0; these are the documents that do not belong to topic 2. Each document appears in each panel in this plot, and its γ for that topic tells us that document’s probability of belonging in that topic.
+
+This plot displays the type of information we used to choose how many topics for our topic modeling procedure. 
+
+**`r colorize("Connecting topic modeling with keywords ","blue")`** 
+
+Let’s connect these topic models with the keywords and see what relationships we can find. We can full_join() this to the human-tagged keywords and discover which keywords are associated with which topic.
+
+```{r}
+lda_gamma <- full_join(lda_gamma, nasa_keyword, by = c("document" = "id"))
+
+lda_gamma
+```
+
+Now we can use filter() to keep only the document-topic entries that have probabilities (γ) greater than some cut-off value; let’s use 0.9.
+```{r}
+top_keywords <- lda_gamma %>% 
+  filter(gamma > 0.9) %>% 
+  count(topic, keyword, sort = TRUE)
+
+top_keywords
+```
+
+**`r colorize("What are the top keywords for each topic? ","blue")`**  
+This can also help us to better name the topics. 
+**NOTE: this graph will be more visible if you display it in Plots window.**
+```{r}
+top_keywords %>%
+  group_by(topic) %>%
+  slice_max(n, n = 10, with_ties = FALSE) %>%
+  ungroup %>%
+  mutate(keyword = reorder_within(keyword, n, topic)) %>%
+  ggplot(aes(n, keyword, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Top keywords for each LDA topic",
+       x = "Number of documents", y = NULL) +
+  scale_y_reordered() +
+  facet_wrap(~ topic, ncol = 4, scales = "free")
+```
+
+We have built an LDA topic model (with 12 topics) for the description fields of the NASA datasets. This plot answers the question,  `r colorize("**For the datasets with description fields that have a high probability of belonging to a given topic, what are the most common human-assigned keywords?”**", "red")` 
+
+
+**`r colorize("Networks of Keywords ","blue")`**
+
+Let’s make a network of the keywords to see which keywords commonly occur together in the same datasets. 
+
+**NOTE:** This will help us to determine the topics.
+
+```{r}
+keyword_pairs <- nasa_keyword %>% 
+  pairwise_count(keyword, id, sort = TRUE, upper = FALSE)
+
+keyword_pairs
+```
+
+```{r}
+set.seed(1234)
+keyword_pairs %>%
+  filter(n >= 700) %>% # co-occurrence greater than 700 frequency
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n, edge_width = n), edge_colour = "royalblue") +
+  geom_node_point(size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE,
+                 point.padding = unit(0.2, "lines")) +
+  theme_void()
+```
+
+**`r colorize("Relationship/Correlation among keywords  ","blue")`**
+To examine the relationships among keywords in a different way, we can find the correlation among the keywords. This looks for those keywords that are more likely to occur together than with other keywords for a dataset.
+```{r}
+keyword_cors <- nasa_keyword %>% 
+  group_by(keyword) %>%
+  filter(n() >= 50) %>%
+  pairwise_cor(keyword, id, sort = TRUE, upper = FALSE)
+keyword_cors
+```
+
+We notice that keywords at the top of this sorted tibble have correlation coefficients equal to 1, which means they always occur together. This means these are redundant keywords. It may not make sense to continue to use both of the keywords in these sets of pairs; instead, just one keyword could be used.
+
+Let’s visualize the network of keyword correlations, just as we did for keyword co-occurences.
+```{r}
+set.seed(1234)
+keyword_cors %>%
+  filter(correlation > .6) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation, edge_width = correlation), edge_colour = "royalblue") +
+  geom_node_point(size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE,
+                 point.padding = unit(0.2, "lines")) +
+  theme_void()
+```
+
+Reference : 
+https://github.com/ccs-amsterdam/r-course-material/blob/master/tutorials/R_text_LDA_perplexity.md 
+
+**`r colorize(" End!","blue")`**
